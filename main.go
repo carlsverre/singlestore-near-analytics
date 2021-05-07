@@ -9,6 +9,7 @@ import (
 var configPath = flag.String("config", "config.yaml", "path to the config file")
 var startHeight = flag.Int64("start-height", -1, "start replicating at this block height")
 var batchSize = flag.Int("batch-size", 100, "maximum number of blocks to replicate per batch")
+var pollInterval = flag.Duration("poll-interval", time.Millisecond*500, "time to sleep between polling postgres for more blocks")
 
 func main() {
 	flag.Parse()
@@ -78,7 +79,7 @@ func main() {
 
 		// only sleep if we have "caught up"
 		if highestBlockSingleStore.BlockHeight > highestBlockPostgres.BlockHeight {
-			time.Sleep(time.Second)
+			time.Sleep(*pollInterval)
 		} else {
 			log.Printf("replicated up to block %d, target %d", highestBlockSingleStore.BlockHeight, highestBlockPostgres.BlockHeight)
 		}
