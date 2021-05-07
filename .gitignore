@@ -1,2 +1,3 @@
-config.yaml
-singlestore-near-analytics
+/config.yaml
+/singlestore-near-analytics
+/initialize/config.env

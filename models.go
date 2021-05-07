@@ -1,5 +1,7 @@
 package main
 
+import "strconv"
+
 type Model interface {
 	Key() string
 	Record() []string
@@ -10,6 +12,10 @@ func fmtStringPtr(s *string) string {
 		return "\\N"
 	}
 	return *s
+}
+
+func fmtI64(i int64) string {
+	return strconv.FormatInt(i, 10)
 }
 
 type AccessKey struct {
@@ -165,7 +171,7 @@ func (m *ActionReceipt) Record() []string {
 }
 
 type Block struct {
-	BlockHeight     string
+	BlockHeight     int64
 	BlockHash       string
 	PrevBlockHash   string
 	BlockTimestamp  string
@@ -180,7 +186,7 @@ func (m *Block) Key() string {
 
 func (m *Block) Record() []string {
 	return []string{
-		m.BlockHeight,
+		fmtI64(m.BlockHeight),
 		m.BlockHash,
 		m.PrevBlockHash,
 		m.BlockTimestamp,
@@ -256,7 +262,6 @@ type ExecutionOutcome struct {
 	ReceiptId                string
 	ExecutedInBlockHash      string
 	ExecutedInBlockTimestamp string
-	ExecutedInChunkHash      string
 	IndexInChunk             string
 	GasBurnt                 string
 	TokensBurnt              string
@@ -274,7 +279,6 @@ func (m *ExecutionOutcome) Record() []string {
 		m.ReceiptId,
 		m.ExecutedInBlockHash,
 		m.ExecutedInBlockTimestamp,
-		m.ExecutedInChunkHash,
 		m.IndexInChunk,
 		m.GasBurnt,
 		m.TokensBurnt,

@@ -7,6 +7,8 @@ import (
 )
 
 var configPath = flag.String("config", "config.yaml", "path to the config file")
+var startHeight = flag.Int64("start-height", -1, "start replicating at this block height")
+var batchSize = flag.Int("batch-size", 100, "maximum number of blocks to replicate per batch")
 
 func main() {
 	flag.Parse()
@@ -40,11 +42,45 @@ func main() {
 		config.SingleStore.Host, config.SingleStore.Port)
 	log.Printf("metrics available at http://localhost:%d/metrics", config.Metrics.Port)
 
+	if *startHeight == -1 {
+		highestBlockSingleStore, err := ReadHighestBlock(sdbConn)
+		if err != nil {
+			log.Fatalf("unable to read highest block from singlestore: %+v", err)
+		}
+		if highestBlockSingleStore == nil {
+			log.Fatal("refusing to start from the first block; specify --start-height=0 to override")
+		}
+		startHeight = &highestBlockSingleStore.BlockHeight
+		// start replicating at the next block
+		(*startHeight)++
+	}
+
+	highestBlockPostgres, err := ReadHighestBlock(pgConn)
+	if err != nil {
+		log.Fatalf("unable to read highest block from postgres: %+v", err)
+	}
+
+	height := *startHeight
+	limit := *batchSize
 	for {
-		err = Replicate(pgConn, sdbConn)
+		err = Replicate(pgConn, sdbConn, height, limit)
 		if err != nil {
 			log.Fatalf("replication failed: %+v", err)
 		}
-		time.Sleep(time.Second)
+
+		highestBlockSingleStore, err := ReadHighestBlock(sdbConn)
+		if err != nil {
+			log.Fatalf("unable to read highest block from singlestore: %+v", err)
+		}
+		height = highestBlockSingleStore.BlockHeight + 1
+
+		metricBlockHeight.Set(float64(height))
+
+		// only sleep if we have "caught up"
+		if highestBlockSingleStore.BlockHeight > highestBlockPostgres.BlockHeight {
+			time.Sleep(time.Second)
+		} else {
+			log.Printf("replicated up to block %d, target %d", highestBlockSingleStore.BlockHeight, highestBlockPostgres.BlockHeight)
+		}
 	}
 }

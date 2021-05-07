@@ -4,24 +4,31 @@ import (
 	"database/sql"
 	"log"
 
+	"github.com/georgysavva/scany/dbscan"
 	"github.com/georgysavva/scany/sqlscan"
 	"github.com/lib/pq"
 	"github.com/pkg/errors"
 )
 
-func Replicate(pgConn *sql.DB, sdbConn *sql.DB) error {
-	var baseHeight int64
-	err := sdbConn.QueryRow("select IFNULL(max(block_height), 0) from blocks").Scan(&baseHeight)
+func ReadHighestBlock(db *sql.DB) (*Block, error) {
+	rows, err := db.Query("select * from blocks where block_height = (select max(block_height) from blocks)")
 	if err != nil {
-		return errors.Wrap(err, "failed to query max block height")
+		return nil, errors.Wrap(err, "failed to query latest block")
 	}
 
-	if baseHeight == 0 {
-		return errors.New("refusing to replicate from beginning of time")
+	var block Block
+	err = dbscan.ScanOne(&block, rows)
+	if err != nil {
+		if dbscan.NotFound(err) {
+			return nil, nil
+		}
+		return nil, errors.Wrap(err, "failed to scan block")
 	}
 
-	blockHeight.Set(float64(baseHeight))
+	return &block, nil
+}
 
+func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight int64, limit int) error {
 	loader := NewLoader(sdbConn, []string{
 		"blocks",
 		"chunks",
@@ -60,12 +67,12 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB) error {
 			if collectKeys {
 				keys = append(keys, dst.Key())
 			}
-			replicatedRows.Inc()
+			metricReplicatedRows.Inc()
 		}
 		return keys, nil
 	}
 
-	blockHashes, err := simpleReplicate(true, "blocks", &Block{}, "select * from blocks where block_height > $1 order by block_height asc", baseHeight)
+	blockHashes, err := simpleReplicate(true, "blocks", &Block{}, "select * from blocks where block_height >= $1 order by block_height asc limit $2", baseHeight, limit)
 	if err != nil {
 		return errors.Wrap(err, "failed to query blocks")
 	}
@@ -99,9 +106,9 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB) error {
 
 	simpleReplicateParallel("execution_outcomes", &ExecutionOutcome{}, "select * from execution_outcomes where executed_in_block_hash = ANY($1)", pq.Array(blockHashes))
 
-	simpleReplicateParallel("access_keys", &AccessKey{}, "select * from access_keys where last_update_block_height > $1", baseHeight)
+	simpleReplicateParallel("access_keys", &AccessKey{}, "select * from access_keys where last_update_block_height >= $1", baseHeight)
 
-	simpleReplicateParallel("accounts", &Account{}, "select * from accounts where last_update_block_height > $1", baseHeight)
+	simpleReplicateParallel("accounts", &Account{}, "select * from accounts where last_update_block_height >= $1", baseHeight)
 
 	simpleReplicateParallel("transaction_actions", &TransactionAction{}, "select * from transaction_actions where transaction_hash = ANY($1)", pq.Array(transactionHashes))
 
