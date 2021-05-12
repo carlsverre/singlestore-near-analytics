@@ -5,6 +5,8 @@ go 1.15
 require (
 	github.com/georgysavva/scany v0.2.8
 	github.com/go-sql-driver/mysql v1.6.0
+	github.com/hamba/avro v1.5.4
+	github.com/iancoleman/strcase v0.1.3
 	github.com/jackc/pgtype v1.7.0
 	github.com/jackc/pgx v3.6.2+incompatible
 	github.com/jackc/pgx/v4 v4.11.0

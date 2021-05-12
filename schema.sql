@@ -2,6 +2,16 @@ drop database if exists near;
 create database near;
 use near;
 
+-- the replication_meta table contains one row per range of blocks replicated to
+-- this database.  The block_height field refers to the highest block_height in
+-- the range of replicated blocks.
+CREATE TABLE replication_meta (
+    block_height DECIMAL(20,0) NOT NULL,
+    KEY (block_height) USING CLUSTERED COLUMNSTORE,
+    UNIQUE KEY (block_height) USING HASH,
+    SHARD (block_height)
+);
+
 CREATE TABLE access_keys (
     public_key TEXT NOT NULL,
     account_id TEXT NOT NULL,
@@ -43,6 +53,9 @@ CREATE TABLE action_receipt_actions (
     index_in_action_receipt INT NOT NULL,
     action_kind TEXT NOT NULL,
     args JSON NOT NULL,
+    receipt_predecessor_account_id TEXT NOT NULL,
+    receipt_receiver_account_id TEXT NOT NULL,
+    receipt_included_in_block_timestamp DECIMAL(20,0) NOT NULL,
     PRIMARY KEY (receipt_id, index_in_action_receipt),
     SHARD (receipt_id)
 );
@@ -78,6 +91,7 @@ CREATE TABLE blocks (
     gas_price DECIMAL(45,0) NOT NULL,
     author_account_id TEXT NOT NULL,
     KEY (block_hash) USING CLUSTERED COLUMNSTORE,
+    UNIQUE KEY (block_hash) USING HASH,
     SHARD (block_hash)
 );
 

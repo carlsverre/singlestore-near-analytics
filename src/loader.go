@@ -1,61 +1,69 @@
-package main
+package src
 
 import (
 	"database/sql"
-	"encoding/csv"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/hamba/avro"
+	"github.com/pkg/errors"
 	uuid "github.com/satori/go.uuid"
 )
 
 type Stream struct {
-	table string
-	w     *csv.Writer
-	pw    io.WriteCloser
-	pr    io.Reader
+	table         string
+	readID        string
+	loadDataQuery string
+	w             *avro.Encoder
+	pw            io.WriteCloser
+	pr            io.Reader
 }
 
-func NewStream(table string) *Stream {
+func NewStream(model ModelInfo) *Stream {
 	pr, pw := io.Pipe()
-	w := csv.NewWriter(pw)
-	w.Comma = '\t'
+	w := avro.NewEncoderForSchema(model.Schema, pw)
+
+	var columnMap []string
+	for fieldName, columnName := range model.FieldMap {
+		columnMap = append(columnMap, fmt.Sprintf("%s <- %s", columnName, fieldName))
+	}
+	sort.Strings(columnMap)
+
+	readID := uuid.NewV4().String()
+	query := fmt.Sprintf(`
+		LOAD DATA LOCAL INFILE 'Reader::%s'
+		REPLACE INTO TABLE %s
+		FORMAT AVRO
+		( %s )
+		SCHEMA '%s'
+		ERRORS HANDLE '%s'
+	`, readID, model.Table, strings.Join(columnMap, ", "), model.Schema.String(), model.Table)
 
 	return &Stream{
-		table: table,
-		w:     w,
-		pw:    pw,
-		pr:    pr,
+		table:         model.Table,
+		readID:        readID,
+		loadDataQuery: query,
+		w:             w,
+		pw:            pw,
+		pr:            pr,
 	}
 }
 
 func (s *Stream) LoadData(sdbConn *sql.DB) error {
-	readID := uuid.NewV4().String()
-	mysql.RegisterReaderHandler(readID, func() io.Reader { return s.pr })
-	defer mysql.DeregisterReaderHandler(readID)
+	mysql.RegisterReaderHandler(s.readID, func() io.Reader { return s.pr })
+	defer mysql.DeregisterReaderHandler(s.readID)
 
-	query := fmt.Sprintf(`
-		LOAD DATA LOCAL INFILE 'Reader::%s'
-		REPLACE INTO TABLE %s
-		COLUMNS TERMINATED BY '\t'
-		OPTIONALLY ENCLOSED BY '"'
-	`, readID, s.table)
-
-	_, err := sdbConn.Exec(query)
+	_, err := sdbConn.Exec(s.loadDataQuery)
 	return err
 }
 
-func (s *Stream) WriteRow(row []string) error {
-	//fmt.Printf("got row: %+v\n", row)
-	return s.w.Write(row)
-}
-
-func (s *Stream) Flush() error {
-	s.w.Flush()
-	return s.w.Error()
+func (s *Stream) WriteRow(row interface{}) error {
+	return s.w.Encode(row)
 }
 
 func (s *Stream) Close() error {
@@ -73,16 +81,16 @@ type Loader struct {
 	wg         *sync.WaitGroup
 }
 
-func NewLoader(sdbConn *sql.DB, tables []string) *Loader {
+func NewLoader(sdbConn *sql.DB) *Loader {
 	l := &Loader{
 		streams:    make(map[string]*Stream),
 		streamErrs: make(chan LoadErr),
 		wg:         &sync.WaitGroup{},
 	}
 
-	for _, table := range tables {
-		stream := NewStream(table)
-		l.streams[table] = stream
+	for _, model := range Models {
+		stream := NewStream(model)
+		l.streams[model.Table] = stream
 		l.wg.Add(1)
 		go func(stream *Stream) {
 			err := stream.LoadData(sdbConn)
@@ -99,10 +107,10 @@ func NewLoader(sdbConn *sql.DB, tables []string) *Loader {
 	return l
 }
 
-func (l *Loader) WriteRow(table string, row []string) error {
+func (l *Loader) WriteRow(table string, row interface{}) error {
 	s, ok := l.streams[table]
 	if !ok {
-		return fmt.Errorf("no table with name %s", table)
+		return errors.Errorf("no table with name %s", table)
 	}
 
 	return s.WriteRow(row)
@@ -131,20 +139,6 @@ outer:
 
 func (l *Loader) Close() error {
 	err := l.Error()
-	if err != nil {
-		return err
-	}
-
-	// flush the streams, we need to ensure that all streams safely flushed
-	// before finishing the commit
-	for _, stream := range l.streams {
-		err := stream.Flush()
-		if err != nil {
-			return err
-		}
-	}
-
-	err = l.Error()
 	if err != nil {
 		return err
 	}

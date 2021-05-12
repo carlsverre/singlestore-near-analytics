@@ -1,21 +1,128 @@
-package main
+package src
 
-import "strconv"
+import (
+	"log"
+	"reflect"
+
+	"github.com/hamba/avro"
+	"github.com/iancoleman/strcase"
+	"github.com/pkg/errors"
+)
 
 type Model interface {
 	Key() string
-	Record() []string
+	Table() string
 }
 
-func fmtStringPtr(s *string) string {
-	if s == nil {
-		return "\\N"
+type ModelInfo struct {
+	Table  string
+	Schema avro.Schema
+
+	// FieldMap translates from the golang field name to the corresponding
+	// column name in SingleStore
+	FieldMap map[string]string
+}
+
+var Models []ModelInfo
+
+func init() {
+	models := []Model{
+		&AccessKey{},
+		&AccountChange{},
+		&Account{},
+		&ActionReceiptAction{},
+		&ActionReceiptInputData{},
+		&ActionReceiptOutputData{},
+		&ActionReceipt{},
+		&Block{},
+		&Chunk{},
+		&DataReceipt{},
+		&ExecutionOutcomeReceipt{},
+		&ExecutionOutcome{},
+		&Receipt{},
+		&TransactionAction{},
+		&Transaction{},
 	}
-	return *s
+
+	for _, model := range models {
+		schema, fieldMap, err := GenerateSchemaAndFieldMap(model)
+		if err != nil {
+			panic(err)
+		}
+		Models = append(Models, ModelInfo{
+			Table:    model.Table(),
+			Schema:   schema,
+			FieldMap: fieldMap,
+		})
+	}
 }
 
-func fmtI64(i int64) string {
-	return strconv.FormatInt(i, 10)
+func GenerateSchemaAndFieldMap(m interface{}) (avro.Schema, map[string]string, error) {
+	mType := reflect.TypeOf(m)
+
+	if mType.Kind() == reflect.Ptr {
+		mType = mType.Elem()
+	}
+
+	if mType.Kind() != reflect.Struct {
+		return nil, nil, errors.New("can only generate Avro schema for a struct")
+	}
+
+	fields := make([]*avro.Field, 0, mType.NumField())
+	fieldMap := make(map[string]string)
+	for i := 0; i < mType.NumField(); i++ {
+		f := mType.Field(i)
+		fType := f.Type
+
+		fieldMap[f.Name] = strcase.ToSnake(f.Name)
+
+		var schemaType avro.Type
+		var nullable bool
+
+		if fType.Kind() == reflect.Ptr {
+			fType = fType.Elem()
+			nullable = true
+		}
+
+		switch fType.Kind() {
+		case reflect.String:
+			schemaType = avro.String
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32:
+			schemaType = avro.Int
+		case reflect.Int64:
+			schemaType = avro.Long
+		case reflect.Float32:
+			schemaType = avro.Float
+		case reflect.Float64:
+			schemaType = avro.Double
+		case reflect.Bool:
+			schemaType = avro.Boolean
+		default:
+			log.Fatalf("type not supported: %s", fType.Kind())
+		}
+
+		var fieldSchema avro.Schema = avro.NewPrimitiveSchema(schemaType, nil)
+		var err error
+		if nullable {
+			fieldSchema, err = avro.NewUnionSchema([]avro.Schema{fieldSchema, &avro.NullSchema{}})
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+
+		field, err := avro.NewField(f.Name, fieldSchema, avro.NoDefault)
+		if err != nil {
+			return nil, nil, err
+		}
+		fields = append(fields, field)
+	}
+
+	schema, err := avro.NewRecordSchema(mType.Name(), "com.singlestore", fields)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return schema, fieldMap, err
 }
 
 type AccessKey struct {
@@ -31,15 +138,8 @@ func (m *AccessKey) Key() string {
 	return m.PublicKey + ":" + m.AccountId
 }
 
-func (m *AccessKey) Record() []string {
-	return []string{
-		m.PublicKey,
-		m.AccountId,
-		fmtStringPtr(m.CreatedByReceiptId),
-		fmtStringPtr(m.DeletedByReceiptId),
-		m.PermissionKind,
-		m.LastUpdateBlockHeight,
-	}
+func (m *AccessKey) Table() string {
+	return "access_keys"
 }
 
 type AccountChange struct {
@@ -59,19 +159,8 @@ func (m *AccountChange) Key() string {
 	return m.Id
 }
 
-func (m *AccountChange) Record() []string {
-	return []string{
-		m.Id,
-		m.AffectedAccountId,
-		m.ChangedInBlockTimestamp,
-		m.ChangedInBlockHash,
-		m.CausedByTransactionHash,
-		m.CausedByReceiptId,
-		m.UpdateReason,
-		m.AffectedAccountNonstakedBalance,
-		m.AffectedAccountStakedBalance,
-		m.AffectedAccountStorageUsage,
-	}
+func (m *AccountChange) Table() string {
+	return "account_changes"
 }
 
 type Account struct {
@@ -86,34 +175,26 @@ func (m *Account) Key() string {
 	return m.Id
 }
 
-func (m *Account) Record() []string {
-	return []string{
-		m.Id,
-		m.AccountId,
-		fmtStringPtr(m.CreatedByReceiptId),
-		fmtStringPtr(m.DeletedByReceiptId),
-		m.LastUpdateBlockHeight,
-	}
+func (m *Account) Table() string {
+	return "accounts"
 }
 
 type ActionReceiptAction struct {
-	ReceiptId            string
-	IndexInActionReceipt string
-	ActionKind           string
-	Args                 string
+	ReceiptId                       string
+	IndexInActionReceipt            string
+	ActionKind                      string
+	Args                            string
+	ReceiptPredecessorAccountId     string
+	ReceiptReceiverAccountId        string
+	ReceiptIncludedInBlockTimestamp string
 }
 
 func (m *ActionReceiptAction) Key() string {
 	return m.ReceiptId + ":" + m.IndexInActionReceipt
 }
 
-func (m *ActionReceiptAction) Record() []string {
-	return []string{
-		m.ReceiptId,
-		m.IndexInActionReceipt,
-		m.ActionKind,
-		m.Args,
-	}
+func (m *ActionReceiptAction) Table() string {
+	return "action_receipt_actions"
 }
 
 type ActionReceiptInputData struct {
@@ -125,11 +206,8 @@ func (m *ActionReceiptInputData) Key() string {
 	return m.InputDataId + ":" + m.InputToReceiptId
 }
 
-func (m *ActionReceiptInputData) Record() []string {
-	return []string{
-		m.InputDataId,
-		m.InputToReceiptId,
-	}
+func (m *ActionReceiptInputData) Table() string {
+	return "action_receipt_input_data"
 }
 
 type ActionReceiptOutputData struct {
@@ -142,12 +220,8 @@ func (m *ActionReceiptOutputData) Key() string {
 	return m.OutputDataId + ":" + m.OutputFromReceiptId
 }
 
-func (m *ActionReceiptOutputData) Record() []string {
-	return []string{
-		m.OutputDataId,
-		m.OutputFromReceiptId,
-		m.ReceiverAccountId,
-	}
+func (m *ActionReceiptOutputData) Table() string {
+	return "action_receipt_output_data"
 }
 
 type ActionReceipt struct {
@@ -161,17 +235,12 @@ func (m *ActionReceipt) Key() string {
 	return m.ReceiptId
 }
 
-func (m *ActionReceipt) Record() []string {
-	return []string{
-		m.ReceiptId,
-		m.SignerAccountId,
-		m.SignerPublicKey,
-		m.GasPrice,
-	}
+func (m *ActionReceipt) Table() string {
+	return "action_receipts"
 }
 
 type Block struct {
-	BlockHeight     int64
+	BlockHeight     string
 	BlockHash       string
 	PrevBlockHash   string
 	BlockTimestamp  string
@@ -184,16 +253,8 @@ func (m *Block) Key() string {
 	return m.BlockHash
 }
 
-func (m *Block) Record() []string {
-	return []string{
-		fmtI64(m.BlockHeight),
-		m.BlockHash,
-		m.PrevBlockHash,
-		m.BlockTimestamp,
-		m.TotalSupply,
-		m.GasPrice,
-		m.AuthorAccountId,
-	}
+func (m *Block) Table() string {
+	return "blocks"
 }
 
 type Chunk struct {
@@ -210,16 +271,8 @@ func (m *Chunk) Key() string {
 	return m.ChunkHash
 }
 
-func (m *Chunk) Record() []string {
-	return []string{
-		m.IncludedInBlockHash,
-		m.ChunkHash,
-		m.ShardId,
-		m.Signature,
-		m.GasLimit,
-		m.GasUsed,
-		m.AuthorAccountId,
-	}
+func (m *Chunk) Table() string {
+	return "chunks"
 }
 
 type DataReceipt struct {
@@ -232,12 +285,8 @@ func (m *DataReceipt) Key() string {
 	return m.DataId
 }
 
-func (m *DataReceipt) Record() []string {
-	return []string{
-		m.DataId,
-		m.ReceiptId,
-		fmtStringPtr(m.Data),
-	}
+func (m *DataReceipt) Table() string {
+	return "data_receipts"
 }
 
 type ExecutionOutcomeReceipt struct {
@@ -250,12 +299,8 @@ func (m *ExecutionOutcomeReceipt) Key() string {
 	return m.ExecutedReceiptId + ":" + m.IndexInExecutionOutcome
 }
 
-func (m *ExecutionOutcomeReceipt) Record() []string {
-	return []string{
-		m.ExecutedReceiptId,
-		m.IndexInExecutionOutcome,
-		m.ProducedReceiptId,
-	}
+func (m *ExecutionOutcomeReceipt) Table() string {
+	return "execution_outcome_receipts"
 }
 
 type ExecutionOutcome struct {
@@ -274,18 +319,8 @@ func (m *ExecutionOutcome) Key() string {
 	return m.ReceiptId
 }
 
-func (m *ExecutionOutcome) Record() []string {
-	return []string{
-		m.ReceiptId,
-		m.ExecutedInBlockHash,
-		m.ExecutedInBlockTimestamp,
-		m.IndexInChunk,
-		m.GasBurnt,
-		m.TokensBurnt,
-		m.ExecutorAccountId,
-		m.Status,
-		m.ShardID,
-	}
+func (m *ExecutionOutcome) Table() string {
+	return "execution_outcomes"
 }
 
 type Receipt struct {
@@ -304,18 +339,8 @@ func (m *Receipt) Key() string {
 	return m.ReceiptId
 }
 
-func (m *Receipt) Record() []string {
-	return []string{
-		m.ReceiptId,
-		m.IncludedInBlockHash,
-		m.IncludedInChunkHash,
-		m.IndexInChunk,
-		m.IncludedInBlockTimestamp,
-		m.PredecessorAccountId,
-		m.ReceiverAccountId,
-		m.ReceiptKind,
-		m.OriginatedFromTransactionHash,
-	}
+func (m *Receipt) Table() string {
+	return "receipts"
 }
 
 type TransactionAction struct {
@@ -329,13 +354,8 @@ func (m *TransactionAction) Key() string {
 	return m.TransactionHash
 }
 
-func (m *TransactionAction) Record() []string {
-	return []string{
-		m.TransactionHash,
-		m.IndexInTransaction,
-		m.ActionKind,
-		m.Args,
-	}
+func (m *TransactionAction) Table() string {
+	return "transaction_actions"
 }
 
 type Transaction struct {
@@ -359,21 +379,6 @@ func (m *Transaction) Key() string {
 	return m.TransactionHash
 }
 
-func (m *Transaction) Record() []string {
-	return []string{
-		m.TransactionHash,
-		m.IncludedInBlockHash,
-		m.IncludedInChunkHash,
-		m.IndexInChunk,
-		m.BlockTimestamp,
-		m.SignerAccountId,
-		m.SignerPublicKey,
-		m.Nonce,
-		m.ReceiverAccountId,
-		m.Signature,
-		m.Status,
-		m.ConvertedIntoReceiptId,
-		m.ReceiptConversionGasBurnt,
-		m.ReceiptConversionTokensBurnt,
-	}
+func (m *Transaction) Table() string {
+	return "transactions"
 }

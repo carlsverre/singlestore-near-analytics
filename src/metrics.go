@@ -1,4 +1,4 @@
-package main
+package src
 
 import (
 	"fmt"
@@ -11,13 +11,9 @@ import (
 )
 
 var (
-	metricReplicatedRows = promauto.NewCounter(prometheus.CounterOpts{
+	MetricReplicatedRows = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "singlestore_replicated_rows",
 		Help: "The total number of rows replicated to SingleStore",
-	})
-	metricBlockHeight = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "singlestore_block_height",
-		Help: "The largest block height replicated to SingleStore",
 	})
 )
 
