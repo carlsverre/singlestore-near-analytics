@@ -18,7 +18,7 @@ For the initial load, use the python code contained in ./initialize which is mor
 
 1. Install dependencies
     ```bash
-    sudo apt install lz4 postgres mariadb-client python3
+    sudo apt install lz4 postgresql mariadb-client python3 python3-pip
     pip3 install -r initialize/requirements.txt
     ```
 2. Run the initial copy (this will take some time)
