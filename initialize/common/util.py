@@ -67,7 +67,10 @@ def named_pipe(suffix):
 
 
 def replicate_table(src_name, src_columns, dest_name, dest_columns, bool_columns=[]):
-    with named_pipe(suffix=".lz4") as pipename:
+    compression = config.COMPRESSION
+    suffix = "." + compression if compression != "none" else ""
+
+    with named_pipe(suffix) as pipename:
         dump_query = textwrap.dedent(
             """\
                 \COPY (SELECT {columns} FROM {table_name}) TO STDOUT \
@@ -107,10 +110,15 @@ def replicate_table(src_name, src_columns, dest_name, dest_columns, bool_columns
         # start dumping into the pipe from Postgres
         src = psql("-c", dump_query, stdout=subprocess.PIPE)
 
-        # pipe the output of Postgres into lz4
-        src_gz = subprocess.Popen("lz4", stdin=src.stdout, stdout=pipe)
+        # pipe the output of Postgres into compression layer
+        if compression == "lz4":
+            src_gz = subprocess.Popen("lz4", stdin=src.stdout, stdout=pipe)
+        elif compression == "gz":
+            src_gz = subprocess.Popen("gzip", stdin=src.stdout, stdout=pipe)
+        else:
+            src_gz = subprocess.Popen("cat", stdin=src.stdout, stdout=pipe)
 
-        # wait for postgres and then lz4 to finish
+        # wait for postgres and then compression to finish
         wait_and_check(src)
         wait_and_check(src_gz)
 

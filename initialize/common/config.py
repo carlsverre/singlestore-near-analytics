@@ -28,3 +28,4 @@ __load("MEMSQL_PW", default="")
 __load("MEMSQL_DB")
 
 __load("TABLES", default="")
+__load("COMPRESSION", default="lz4")

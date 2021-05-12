@@ -49,12 +49,24 @@ def main():
     pg_conn = util.connect_pg()
     memsql_conn = util.connect_memsql()
 
+    max_block_height = 0
+    with pg_conn.cursor() as cursor:
+        cursor.execute("select coalesce(max(block_height), 0) from blocks")
+        row = cursor.fetchone()
+        max_block_height = row[0]
+
+    logging.info("max block height at replication start: %s" % max_block_height)
+
     if config.TABLES != "":
         def _t(t):
             return __table(t)
         tables = map(_t, config.TABLES.split(","))
     else:
         tables = TABLES
+
+    compression = config.COMPRESSION
+    if compression not in ("none", "lz4", "gz"):
+        raise Exception("COMPRESSION must be one of (lz4, gz, none)")
 
     for table in tables:
         logging.info("Replicating `%s` to `%s`", table.src, table.dest)
@@ -136,8 +148,10 @@ def main():
 
         memsql_count = util.query_row_count(memsql_conn, table.dest)
         if pg_count != memsql_count:
-            print("WARN: row counts differ post replication! postgres({}) memsql({})".format(
-                pg_count, memsql_count))
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            print("WARN: row counts differ post replication! postgres({}) memsql({})".format(pg_count, memsql_count))
+            print("WARN: start replication stream before block_height = {}".format(max_block_height))
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
         logging.info("Running analyze table on `%s`", table.dest)
         util.analyze_table(memsql_conn, table.dest)
@@ -147,6 +161,8 @@ def main():
             memsql_count,
             duration,
         )
+
+    logging.info("data initialization finished; start replication stream at block_height = {}".format(max_block_height))
 
 
 if __name__ == "__main__":
