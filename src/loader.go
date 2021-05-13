@@ -8,11 +8,14 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/hamba/avro"
 	"github.com/pkg/errors"
 	uuid "github.com/satori/go.uuid"
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
 )
 
 type Stream struct {
@@ -62,7 +65,42 @@ func (s *Stream) LoadData(sdbConn *sql.DB) error {
 	return err
 }
 
-func (s *Stream) WriteRow(row interface{}) error {
+func isInBasicMultilingualPlane(r rune) bool {
+	return r <= 0xffff
+}
+
+// BMP represents all runes in the Basic Multilingual Plane
+// Runes above this range are not supported until SingleStore 7.5
+var BMP = &unicode.RangeTable{
+	R16: []unicode.Range16{
+		{0x0000, 0xffff, 1},
+	},
+}
+
+var NotBMP = runes.NotIn(BMP)
+
+var MapNotBMP = runes.Map(func(r rune) rune {
+	if NotBMP.Contains(r) {
+		return '�'
+	}
+	return r
+})
+
+func (s *Stream) WriteRow(row Model) error {
+	var err error
+	switch r := row.(type) {
+	case *ActionReceiptAction:
+		r.Args, _, err = transform.String(MapNotBMP, r.Args)
+		if err != nil {
+			panic(fmt.Sprintf("failed to sanitize non-bmp characters in string %q", r.Args))
+		}
+	case *TransactionAction:
+		r.Args, _, err = transform.String(MapNotBMP, r.Args)
+		if err != nil {
+			panic(fmt.Sprintf("failed to sanitize non-bmp characters in string %q", r.Args))
+		}
+	}
+
 	return s.w.Encode(row)
 }
 
@@ -107,7 +145,7 @@ func NewLoader(sdbConn *sql.DB) *Loader {
 	return l
 }
 
-func (l *Loader) WriteRow(table string, row interface{}) error {
+func (l *Loader) WriteRow(table string, row Model) error {
 	s, ok := l.streams[table]
 	if !ok {
 		return errors.Errorf("no table with name %s", table)
