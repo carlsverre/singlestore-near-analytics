@@ -70,6 +70,8 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight string, limit int) (s
 		MetricReplicatedBlocks.Inc()
 	}
 
+	MetricBatchSize.Set(float64(len(blockHashes)))
+
 	if len(blockHashes) == 0 {
 		return "", nil
 	}

@@ -21,6 +21,11 @@ var (
 		Help: "The total number of blocks replicated to SingleStore",
 	})
 
+	MetricBatchSize = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "singlestore_batch_size",
+		Help: "The total number of blocks per batch replicated to SingleStore",
+	})
+
 	MetricBatchReplicationTime = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "singlestore_replication_duration_seconds",
 		Help:    "Measures the time it takes to replicate a batch to SingleStore",
