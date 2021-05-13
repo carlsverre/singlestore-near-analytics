@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"math/big"
 	"time"
@@ -14,22 +13,6 @@ var configPath = flag.String("config", "config.yaml", "path to the config file")
 var startHeight = flag.String("start-height", "-1", "start replicating at this block height")
 var batchSize = flag.Int("batch-size", 100, "maximum number of blocks to replicate per batch")
 var pollInterval = flag.Duration("poll-interval", time.Millisecond*500, "time to sleep between polling postgres for more blocks")
-
-func parseBigInt(i string) *big.Int {
-	out, ok := (&big.Int{}).SetString(i, 10)
-	if !ok {
-		panic(fmt.Sprintf("failed to parse big.Int: %s", i))
-	}
-	return out
-}
-
-func incrementHeight(height string) string {
-	return (&big.Int{}).Add(parseBigInt(height), big.NewInt(1)).String()
-}
-
-func compareHeights(left, right string) int {
-	return parseBigInt(left).Cmp(parseBigInt(right))
-}
 
 func main() {
 	flag.Parse()
@@ -63,22 +46,24 @@ func main() {
 		config.SingleStore.Host, config.SingleStore.Port)
 	log.Printf("metrics available at http://localhost:%d/metrics", config.Metrics.Port)
 
-	height := *startHeight
+	go src.MonitorBlockHeights(pgConn, sdbConn, *pollInterval)
 
-	if height == "-1" {
+	height := src.ParseBigInt(*startHeight)
+
+	if height.Cmp(big.NewInt(-1)) == 0 {
 		var err error
 		height, err = src.ReadMaxReplicatedBlockHeight(sdbConn)
 		if err != nil {
 			log.Fatalf("unable to read highest block from singlestore: %+v", err)
 		}
-		if height == "0" {
+		if height.Cmp(big.NewInt(0)) == 0 {
 			log.Fatal("refusing to start from the first block; specify `--start-height 0` to override")
 		}
 		// start replicating at the next block
-		height = incrementHeight(height)
+		height.Add(height, big.NewInt(1))
 	}
 
-	highestBlockPostgres, err := src.ReadHighestBlock(pgConn)
+	pgInitialMaxBlockHeight, err := src.ReadMaxBlockHeight(pgConn)
 	if err != nil {
 		log.Fatalf("unable to read highest block from postgres: %+v", err)
 	}
@@ -97,20 +82,20 @@ func main() {
 
 		src.MetricBatchReplicationTime.Observe(time.Now().Sub(start).Seconds())
 
-		if replicatedHeight != "" {
+		if replicatedHeight != nil {
 			err = src.WriteReplicatedBlockHeight(sdbConn, replicatedHeight)
 			if err != nil {
 				log.Fatalf("replication failed: %+v", err)
 			}
 
-			height = incrementHeight(replicatedHeight)
+			height = replicatedHeight.Add(replicatedHeight, big.NewInt(1))
 		}
 
 		// only sleep if we have "caught up"
-		if compareHeights(height, highestBlockPostgres.BlockHeight) >= 0 {
+		if height.Cmp(pgInitialMaxBlockHeight) >= 0 {
 			time.Sleep(interval)
 		} else {
-			log.Printf("catching up to height %s, currently at height %s", highestBlockPostgres.BlockHeight, height)
+			log.Printf("catching up to height %s, currently at height %s", pgInitialMaxBlockHeight, height)
 		}
 	}
 }

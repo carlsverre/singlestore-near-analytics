@@ -31,6 +31,11 @@ var (
 		Help:    "Measures the time it takes to replicate a batch to SingleStore",
 		Buckets: []float64{0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 24.6, 51.2, 102.4},
 	})
+
+	MetricBlockHeight = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "singlestore_block_height",
+		Help: "The max block height per source",
+	}, []string{"source"})
 )
 
 func ServeMetrics(config MetricsConfig) {

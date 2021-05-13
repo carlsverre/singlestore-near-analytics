@@ -2,53 +2,66 @@ package src
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
+	"math/big"
+	"time"
 
-	"github.com/georgysavva/scany/dbscan"
 	"github.com/georgysavva/scany/sqlscan"
 	"github.com/lib/pq"
 	"github.com/pkg/errors"
 )
 
-func ReadHighestBlock(db *sql.DB) (*Block, error) {
-	rows, err := db.Query("select * from blocks where block_height = (select max(block_height) from blocks)")
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to query latest block")
-	}
-
-	var block Block
-	err = dbscan.ScanOne(&block, rows)
-	if err != nil {
-		if dbscan.NotFound(err) {
-			return nil, nil
-		}
-		return nil, errors.Wrap(err, "failed to scan block")
-	}
-
-	return &block, nil
-}
-
-func ReadMaxReplicatedBlockHeight(db *sql.DB) (string, error) {
-	row := db.QueryRow("SELECT IFNULL(MAX(block_height), 0) FROM replication_meta")
+func readMaxBlockHeightFromTable(db *sql.DB, tableName string) (*big.Int, error) {
+	row := db.QueryRow(fmt.Sprintf("SELECT coalesce(MAX(block_height), 0) FROM %s", tableName))
 	var height string
 	err := row.Scan(&height)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to query latest block")
+		return nil, errors.Wrap(err, "failed to query latest block")
 	}
-	return height, nil
+	return ParseBigInt(height), nil
 }
 
-func WriteReplicatedBlockHeight(db *sql.DB, block_height string) error {
-	_, err := db.Exec("REPLACE INTO replication_meta VALUES (?)", block_height)
+func ReadMaxReplicatedBlockHeight(db *sql.DB) (*big.Int, error) {
+	return readMaxBlockHeightFromTable(db, "replication_meta")
+}
+
+func ReadMaxBlockHeight(db *sql.DB) (*big.Int, error) {
+	return readMaxBlockHeightFromTable(db, "blocks")
+}
+
+func MonitorBlockHeights(pgConn *sql.DB, sdbConn *sql.DB, pollInterval time.Duration) {
+	for {
+		height, err := ReadMaxBlockHeight(pgConn)
+		if err != nil {
+			log.Printf("failed to read from postgres: %+v", err)
+		} else {
+			MetricBlockHeight.WithLabelValues("postgres").Set(float64(height.Int64()))
+		}
+
+		height, err = ReadMaxReplicatedBlockHeight(sdbConn)
+		if err != nil {
+			log.Printf("failed to read from singlestore: %+v", err)
+			continue
+		} else {
+			MetricBlockHeight.WithLabelValues("singlestore").Set(float64(height.Int64()))
+		}
+
+		time.Sleep(pollInterval)
+	}
+}
+
+func WriteReplicatedBlockHeight(db *sql.DB, block_height *big.Int) error {
+	_, err := db.Exec("REPLACE INTO replication_meta VALUES (?)", block_height.String())
 	return errors.Wrap(err, "failed to save replicated block height")
 }
 
-func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight string, limit int) (string, error) {
+func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight *big.Int, limit int) (*big.Int, error) {
 	loader := NewLoader(sdbConn)
 
-	rows, err := pgConn.Query("select * from blocks where block_height >= $1 order by block_height asc limit $2", baseHeight, limit)
+	rows, err := pgConn.Query("select * from blocks where block_height >= $1 order by block_height asc limit $2", baseHeight.String(), limit)
 	if err != nil {
-		return "", errors.Wrap(err, "failed to read blocks")
+		return nil, errors.Wrap(err, "failed to read blocks")
 	}
 
 	scanner := sqlscan.NewRowScanner(rows)
@@ -58,11 +71,11 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight string, limit int) (s
 	for rows.Next() {
 		err := scanner.Scan(dst)
 		if err != nil {
-			return "", errors.Wrap(err, "failed to scan into &Block{}")
+			return nil, errors.Wrap(err, "failed to scan into &Block{}")
 		}
 		err = loader.WriteRow("blocks", dst)
 		if err != nil {
-			return "", errors.Wrap(err, "failed to write row to loader")
+			return nil, errors.Wrap(err, "failed to write row to loader")
 		}
 		blockHashes = append(blockHashes, dst.Key())
 		maxBlockHeight = dst.BlockHeight
@@ -73,7 +86,7 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight string, limit int) (s
 	MetricBatchSize.Set(float64(len(blockHashes)))
 
 	if len(blockHashes) == 0 {
-		return "", nil
+		return nil, nil
 	}
 
 	simpleReplicate := func(collectKeys bool, table string, dst Model, query string, args ...interface{}) ([]string, error) {
@@ -103,12 +116,12 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight string, limit int) (s
 
 	transactionHashes, err := simpleReplicate(true, "transactions", &Transaction{}, "select * from transactions where included_in_block_hash = ANY($1)", pq.Array(blockHashes))
 	if err != nil {
-		return "", errors.Wrap(err, "failed to replicate transactions")
+		return nil, errors.Wrap(err, "failed to replicate transactions")
 	}
 
 	receiptIDs, err := simpleReplicate(true, "receipts", &Receipt{}, "select * from receipts where included_in_block_hash = ANY($1)", pq.Array(blockHashes))
 	if err != nil {
-		return "", errors.Wrap(err, "failed to replicate receipts")
+		return nil, errors.Wrap(err, "failed to replicate receipts")
 	}
 
 	numParallel := 0
@@ -130,9 +143,9 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight string, limit int) (s
 
 	simpleReplicateParallel("execution_outcomes", &ExecutionOutcome{}, "select * from execution_outcomes where executed_in_block_hash = ANY($1)", pq.Array(blockHashes))
 
-	simpleReplicateParallel("access_keys", &AccessKey{}, "select * from access_keys where last_update_block_height >= $1", baseHeight)
+	simpleReplicateParallel("access_keys", &AccessKey{}, "select * from access_keys where last_update_block_height >= $1", baseHeight.String())
 
-	simpleReplicateParallel("accounts", &Account{}, "select * from accounts where last_update_block_height >= $1", baseHeight)
+	simpleReplicateParallel("accounts", &Account{}, "select * from accounts where last_update_block_height >= $1", baseHeight.String())
 
 	simpleReplicateParallel("transaction_actions", &TransactionAction{}, "select * from transaction_actions where transaction_hash = ANY($1)", pq.Array(transactionHashes))
 
@@ -157,13 +170,13 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight string, limit int) (s
 		}
 	}
 	if lastError != nil {
-		return "", lastError
+		return nil, lastError
 	}
 
 	err = loader.Close()
 	if err != nil {
-		return "", errors.Wrap(err, "failed to finalize the load")
+		return nil, errors.Wrap(err, "failed to finalize the load")
 	}
 
-	return maxBlockHeight, nil
+	return ParseBigInt(maxBlockHeight), nil
 }
