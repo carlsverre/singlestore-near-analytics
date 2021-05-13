@@ -88,10 +88,14 @@ func main() {
 	limit := *batchSize
 	interval := *pollInterval
 	for {
+		start := time.Now()
+
 		replicatedHeight, err := src.Replicate(pgConn, sdbConn, height, limit)
 		if err != nil {
 			log.Fatalf("replication failed: %+v", err)
 		}
+
+		src.MetricBatchReplicationTime.Observe(time.Now().Sub(start).Seconds())
 
 		if replicatedHeight != "" {
 			err = src.WriteReplicatedBlockHeight(sdbConn, replicatedHeight)

@@ -67,6 +67,7 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight string, limit int) (s
 		blockHashes = append(blockHashes, dst.Key())
 		maxBlockHeight = dst.BlockHeight
 		MetricReplicatedRows.Inc()
+		MetricReplicatedBlocks.Inc()
 	}
 
 	if len(blockHashes) == 0 {
