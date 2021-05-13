@@ -24,7 +24,7 @@ var (
 	MetricBatchReplicationTime = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "singlestore_replication_duration_seconds",
 		Help:    "Measures the time it takes to replicate a batch to SingleStore",
-		Buckets: []float64{0.0125, 0.025, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 24.6},
+		Buckets: []float64{0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 24.6, 51.2, 102.4},
 	})
 )
 
