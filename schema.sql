@@ -56,7 +56,7 @@ CREATE TABLE action_receipt_actions (
     receipt_predecessor_account_id TEXT NOT NULL,
     receipt_receiver_account_id TEXT NOT NULL,
     receipt_included_in_block_timestamp DECIMAL(20,0) NOT NULL,
-    PRIMARY KEY (receipt_id, index_in_action_receipt),
+    KEY (receipt_id, index_in_action_receipt) USING CLUSTERED COLUMNSTORE,
     SHARD (receipt_id)
 );
 
@@ -154,7 +154,8 @@ CREATE TABLE transaction_actions (
     index_in_transaction INT NOT NULL,
     action_kind TEXT NOT NULL,
     args JSON NOT NULL,
-    PRIMARY KEY (transaction_hash, index_in_transaction)
+    KEY (transaction_hash, index_in_transaction) USING CLUSTERED COLUMNSTORE,
+    SHARD (transaction_hash)
 );
 
 CREATE TABLE transactions (
