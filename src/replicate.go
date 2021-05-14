@@ -57,6 +57,16 @@ func WriteReplicatedBlockHeight(db *sql.DB, block_height *big.Int) error {
 }
 
 func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight *big.Int, limit int) (*big.Int, error) {
+	rowCount := pgConn.QueryRow("select count(*) from blocks where block_height >= $1", baseHeight.String())
+	var blockCount int64
+	err := rowCount.Scan(&blockCount)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read count from row")
+	}
+	if blockCount == 0 {
+		return nil, nil
+	}
+
 	loader := NewLoader(sdbConn)
 
 	rows, err := pgConn.Query("select * from blocks where block_height >= $1 order by block_height asc limit $2", baseHeight.String(), limit)
@@ -84,10 +94,6 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight *big.Int, limit int) 
 	}
 
 	MetricBatchSize.Set(float64(len(blockHashes)))
-
-	if len(blockHashes) == 0 {
-		return nil, nil
-	}
 
 	simpleReplicate := func(collectKeys bool, table string, dst Model, query string, args ...interface{}) ([]string, error) {
 		rows, err := pgConn.Query(query, args...)
