@@ -31,21 +31,34 @@ func ReadMaxBlockHeight(db *sql.DB) (*big.Int, error) {
 }
 
 func MonitorBlockHeights(pgConn *sql.DB, sdbConn *sql.DB, pollInterval time.Duration) {
+	var (
+		pgHeight  *big.Int
+		sdbHeight *big.Int
+		err       error
+
+		pgGauge  = MetricBlockHeight.WithLabelValues("postgres")
+		sdbGauge = MetricBlockHeight.WithLabelValues("singlestore")
+	)
+
 	for {
-		height, err := ReadMaxBlockHeight(pgConn)
+		pgHeight, err = ReadMaxBlockHeight(pgConn)
 		if err != nil {
 			log.Printf("failed to read from postgres: %+v", err)
-		} else {
-			MetricBlockHeight.WithLabelValues("postgres").Set(float64(height.Int64()))
 		}
 
-		height, err = ReadMaxReplicatedBlockHeight(sdbConn)
+		sdbHeight, err = ReadMaxReplicatedBlockHeight(sdbConn)
 		if err != nil {
 			log.Printf("failed to read from singlestore: %+v", err)
-			continue
-		} else {
-			MetricBlockHeight.WithLabelValues("singlestore").Set(float64(height.Int64()))
 		}
+
+		// this will stop working once height > 2^63-1
+		// on the plus side, that's going to be awhile
+		pgGauge.Set(float64(pgHeight.Int64()))
+		sdbGauge.Set(float64(sdbHeight.Int64()))
+
+		// track lag for convenience
+		lag := (&big.Int{}).Sub(pgHeight, sdbHeight).Int64()
+		MetricBlockLag.Set(float64(lag))
 
 		time.Sleep(pollInterval)
 	}

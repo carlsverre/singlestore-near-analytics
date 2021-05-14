@@ -46,7 +46,7 @@ func main() {
 		config.SingleStore.Host, config.SingleStore.Port)
 	log.Printf("metrics available at http://localhost:%d/metrics", config.Metrics.Port)
 
-	go src.MonitorBlockHeights(pgConn, sdbConn, *pollInterval)
+	go src.MonitorBlockHeights(pgConn, sdbConn, time.Second)
 
 	height := src.ParseBigInt(*startHeight)
 
@@ -80,9 +80,12 @@ func main() {
 			log.Fatalf("replication failed: %+v", err)
 		}
 
-		src.MetricBatchReplicationTime.Observe(time.Now().Sub(start).Seconds())
+		replicationDuration := time.Now().Sub(start)
 
 		if replicatedHeight != nil {
+			// only record the replication time metric if we actually replicated something
+			src.MetricBatchReplicationTime.Observe(replicationDuration.Seconds())
+
 			err = src.WriteReplicatedBlockHeight(sdbConn, replicatedHeight)
 			if err != nil {
 				log.Fatalf("replication failed: %+v", err)
@@ -93,7 +96,7 @@ func main() {
 
 		// only sleep if we have "caught up"
 		if height.Cmp(pgInitialMaxBlockHeight) >= 0 {
-			time.Sleep(interval)
+			time.Sleep(interval - replicationDuration)
 		} else {
 			log.Printf("catching up to height %s, currently at height %s", pgInitialMaxBlockHeight, height)
 		}

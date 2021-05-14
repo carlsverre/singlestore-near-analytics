@@ -36,6 +36,11 @@ var (
 		Name: "singlestore_block_height",
 		Help: "The max block height per source",
 	}, []string{"source"})
+
+	MetricBlockLag = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "singlestore_replication_lag",
+		Help: "How many blocks singlestore is behind postgres",
+	})
 )
 
 func ServeMetrics(config MetricsConfig) {
