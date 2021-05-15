@@ -39,6 +39,7 @@ CREATE TABLE account_changes (
     affected_account_staked_balance DECIMAL(45,0) NOT NULL,
     affected_account_storage_usage DECIMAL(20,0) NOT NULL,
     KEY (id) USING CLUSTERED COLUMNSTORE,
+    UNIQUE KEY (id) USING HASH,
     SHARD (id)
 );
 
