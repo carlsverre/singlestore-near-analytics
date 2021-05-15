@@ -147,8 +147,8 @@ type AccountChange struct {
 	AffectedAccountId               string
 	ChangedInBlockTimestamp         string
 	ChangedInBlockHash              string
-	CausedByTransactionHash         string
-	CausedByReceiptId               string
+	CausedByTransactionHash         *string
+	CausedByReceiptId               *string
 	UpdateReason                    string
 	AffectedAccountNonstakedBalance string
 	AffectedAccountStakedBalance    string

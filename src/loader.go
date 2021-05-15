@@ -19,6 +19,7 @@ import (
 )
 
 type Stream struct {
+	touched       bool
 	table         string
 	readID        string
 	loadDataQuery string
@@ -104,6 +105,10 @@ func (s *Stream) WriteRow(row Model) error {
 	return s.w.Encode(row)
 }
 
+func (s *Stream) Touch() {
+	s.touched = true
+}
+
 func (s *Stream) Close() error {
 	return s.pw.Close()
 }
@@ -143,6 +148,26 @@ func NewLoader(sdbConn *sql.DB) *Loader {
 	}
 
 	return l
+}
+
+func (l *Loader) Touch(table string) error {
+	s, ok := l.streams[table]
+	if !ok {
+		return errors.Errorf("no table with name %s", table)
+	}
+
+	s.Touch()
+	return nil
+}
+
+func (l *Loader) UntouchedTables() []string {
+	out := make([]string, 0)
+	for _, stream := range l.streams {
+		if !stream.touched {
+			out = append(out, stream.table)
+		}
+	}
+	return out
 }
 
 func (l *Loader) WriteRow(table string, row Model) error {

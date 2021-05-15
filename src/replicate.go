@@ -82,6 +82,11 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight *big.Int, limit int) 
 
 	loader := NewLoader(sdbConn)
 
+	err = loader.Touch("blocks")
+	if err != nil {
+		return nil, err
+	}
+
 	rows, err := pgConn.Query("select * from blocks where block_height >= $1 order by block_height asc limit $2", baseHeight.String(), limit)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to read blocks")
@@ -109,6 +114,11 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight *big.Int, limit int) 
 	MetricBatchSize.Set(float64(len(blockHashes)))
 
 	simpleReplicate := func(collectKeys bool, table string, dst Model, query string, args ...interface{}) ([]string, error) {
+		err := loader.Touch(table)
+		if err != nil {
+			return nil, err
+		}
+
 		rows, err := pgConn.Query(query, args...)
 		if err != nil {
 			return nil, err
@@ -158,19 +168,11 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight *big.Int, limit int) 
 		}()
 	}
 
-	simpleReplicateParallel("chunks", &Chunk{}, "select * from chunks where included_in_block_hash = ANY($1)", pq.Array(blockHashes))
-
-	simpleReplicateParallel("execution_outcomes", &ExecutionOutcome{}, "select * from execution_outcomes where executed_in_block_hash = ANY($1)", pq.Array(blockHashes))
-
 	simpleReplicateParallel("access_keys", &AccessKey{}, "select * from access_keys where last_update_block_height >= $1", baseHeight.String())
 
+	simpleReplicateParallel("account_changes", &AccountChange{}, "select * from account_changes where changed_in_block_hash = ANY($1)", pq.Array(blockHashes))
+
 	simpleReplicateParallel("accounts", &Account{}, "select * from accounts where last_update_block_height >= $1", baseHeight.String())
-
-	simpleReplicateParallel("transaction_actions", &TransactionAction{}, "select * from transaction_actions where transaction_hash = ANY($1)", pq.Array(transactionHashes))
-
-	simpleReplicateParallel("action_receipts", &ActionReceipt{}, "select * from action_receipts where receipt_id = ANY($1)", pq.Array(receiptIDs))
-
-	simpleReplicateParallel("data_receipts", &DataReceipt{}, "select * from data_receipts where receipt_id = ANY($1)", pq.Array(receiptIDs))
 
 	simpleReplicateParallel("action_receipt_actions", &ActionReceiptAction{}, "select * from action_receipt_actions where receipt_id = ANY($1)", pq.Array(receiptIDs))
 
@@ -178,7 +180,17 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight *big.Int, limit int) 
 
 	simpleReplicateParallel("action_receipt_output_data", &ActionReceiptOutputData{}, "select * from action_receipt_output_data where output_from_receipt_id = ANY($1)", pq.Array(receiptIDs))
 
+	simpleReplicateParallel("action_receipts", &ActionReceipt{}, "select * from action_receipts where receipt_id = ANY($1)", pq.Array(receiptIDs))
+
+	simpleReplicateParallel("chunks", &Chunk{}, "select * from chunks where included_in_block_hash = ANY($1)", pq.Array(blockHashes))
+
+	simpleReplicateParallel("data_receipts", &DataReceipt{}, "select * from data_receipts where receipt_id = ANY($1)", pq.Array(receiptIDs))
+
 	simpleReplicateParallel("execution_outcome_receipts", &ExecutionOutcomeReceipt{}, "select * from execution_outcome_receipts where executed_receipt_id = ANY($1) or produced_receipt_id = ANY($1)", pq.Array(receiptIDs))
+
+	simpleReplicateParallel("execution_outcomes", &ExecutionOutcome{}, "select * from execution_outcomes where executed_in_block_hash = ANY($1)", pq.Array(blockHashes))
+
+	simpleReplicateParallel("transaction_actions", &TransactionAction{}, "select * from transaction_actions where transaction_hash = ANY($1)", pq.Array(transactionHashes))
 
 	var lastError error
 	for i := 0; i < numParallel; i++ {
@@ -195,6 +207,10 @@ func Replicate(pgConn *sql.DB, sdbConn *sql.DB, baseHeight *big.Int, limit int) 
 	err = loader.Close()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to finalize the load")
+	}
+
+	if untouched := loader.UntouchedTables(); len(untouched) > 0 {
+		return nil, errors.Errorf("the following tables are not being replicated to: %v", untouched)
 	}
 
 	return ParseBigInt(maxBlockHeight), nil
